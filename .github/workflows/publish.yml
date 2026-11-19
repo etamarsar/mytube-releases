@@ -1,0 +1,37 @@
+# Publishes a ready-made APK as a release.
+# Push a branch named "upload" that adds MyTube-<version>.apk (and optionally notes.md) on top of main:
+# this job checks the file, creates the release v<version> from it and deletes the branch again,
+# so main keeps holding only the README and this workflow.
+name: Publish release
+on:
+  push:
+    branches: [upload]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the APK and create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGNER_SHA1: "97:FF:BC:2D:CA:F0:8D:5A:B3:49:3E:4B:1B:DC:F2:5B:A3:42:8B:3F"
+        run: |
+          set -euo pipefail
+          APK=$(ls MyTube-*.apk | head -n 1)
+          V=${APK#MyTube-}; V=${V%.apk}
+          [[ "$V" =~ ^[0-9]+(\.[0-9]+)+$ ]] || { echo "Unexpected version: $V"; exit 1; }
+          # only builds signed with the app's own key
+          keytool -printcert -jarfile "$APK" | grep -q "SHA1: $SIGNER_SHA1" || { echo "The APK is not signed with the MyTube key"; exit 1; }
+          # never a build that carries an access token
+          if unzip -p "$APK" assets/public/config.js | grep -Eq 'github_pat_|ghp_'; then echo "The APK contains a token"; exit 1; fi
+          NOTES="MyTube $V"
+          if [ -f notes.md ]; then NOTES=$(cat notes.md); fi
+          gh release delete "v$V" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "v$V" "$APK" --target main --title "MyTube $V" --notes "$NOTES"
+      - name: Remove the upload branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/upload" || true
